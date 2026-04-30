@@ -90,6 +90,8 @@ function proxyToElectron(req, res, path, method) {
 
 app.post('/api/vault/unlock', (req, res) => proxyToElectron(req, res, '/api/vault/unlock', 'POST'))
 app.get('/api/totp',          (req, res) => proxyToElectron(req, res, '/api/totp', 'GET'))
+app.post('/api/totp',         (req, res) => proxyToElectron(req, res, '/api/totp', 'POST'))
+app.delete('/api/totp/:id',   (req, res) => proxyToElectron(req, res, `/api/totp/${req.params.id}`, 'DELETE'))
 
 // ── Start ────────────────────────────────────────────────────────────────────
 app.listen(PORT, '0.0.0.0', () => {

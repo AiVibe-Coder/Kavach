@@ -119,6 +119,21 @@ function startHttpServer(db, cryptoModule, getSessionKey, port = 3847) {
     res.json(accounts)
   })
 
+  app.post('/api/totp', (req, res) => {
+    const key = getSessionKey()
+    if (!key) return res.status(401).json({ error: 'App locked' })
+    const { name, issuer, secret } = req.body
+    if (!name || !secret) return res.status(400).json({ error: 'name and secret required' })
+    const { encrypted, iv, authTag } = cryptoModule.encryptPassword(secret.toUpperCase().replace(/\s/g,''), key)
+    const account = db.addTotpAccount({ name, issuer: issuer || '', encryptedSecret: encrypted, iv, authTag })
+    res.json(account)
+  })
+
+  app.delete('/api/totp/:id', (req, res) => {
+    db.deleteTotpAccount(req.params.id)
+    res.json({ ok: true })
+  })
+
   // ── Extension API (localhost only, Bearer token required) ───────────────────
 
   function extAuth(req, res, next) {
@@ -274,6 +289,13 @@ select option{background:var(--card)}
 .modal-body{background:var(--surface);border-radius:24px 24px 0 0;padding:24px;width:100%;padding-bottom:calc(env(safe-area-inset-bottom,0px) + 24px)}
 .modal-body h2{font-size:20px;font-weight:700;margin-bottom:20px}
 
+/* ── QR Scanner ── */
+.qr-wrap{position:relative;border-radius:12px;overflow:hidden;background:#000;aspect-ratio:4/3}
+.qr-wrap video{width:100%;display:block}
+.qr-overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none}
+.qr-box{width:180px;height:180px;border:2px solid var(--accent2);border-radius:16px;box-shadow:0 0 0 9999px rgba(0,0,0,.5)}
+.qr-hint{position:absolute;bottom:12px;left:0;right:0;text-align:center;font-size:13px;color:rgba(255,255,255,.8)}
+
 /* ── Settings toggles ── */
 .setting-row{display:flex;align-items:center;justify-content:space-between;gap:12px}
 .setting-label{font-size:15px;font-weight:500}
@@ -362,6 +384,7 @@ select option{background:var(--card)}
 
     <!-- AUTHENTICATOR -->
     <div id="tab-authenticator" style="display:none">
+      <button class="btn btn-primary" style="margin-bottom:16px;width:100%" onclick="openTotpModal()">+ Add Account</button>
       <div id="totp-list"></div>
     </div>
 
@@ -412,6 +435,31 @@ select option{background:var(--card)}
     <div class="btn-row">
       <button class="btn btn-cancel" onclick="closeModal('journal-modal')">Cancel</button>
       <button class="btn btn-primary" onclick="saveJournal()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ADD TOTP MODAL -->
+<div class="modal" id="totp-modal">
+  <div class="modal-body">
+    <h2>Add 2FA Account</h2>
+    <div id="qr-container" style="display:none;margin-bottom:14px">
+      <div class="qr-wrap">
+        <video id="qr-video" muted playsinline></video>
+        <canvas id="qr-canvas" style="display:none"></canvas>
+        <div class="qr-overlay"><div class="qr-box"></div></div>
+        <div class="qr-hint">Point camera at QR code</div>
+      </div>
+      <button class="btn btn-cancel" style="width:100%;margin-top:10px" onclick="stopQR()">Cancel scan</button>
+    </div>
+    <button class="btn btn-primary" id="qr-btn" style="width:100%;margin-bottom:14px" onclick="startQR()">📷 Scan QR Code</button>
+    <input type="text" id="totp-name" placeholder="Account name (e.g. john@gmail.com)"/>
+    <input type="text" id="totp-issuer" placeholder="Service (e.g. Google, GitHub)"/>
+    <input type="text" id="totp-secret" placeholder="Secret key (Base32)" style="font-family:monospace"/>
+    <div id="totp-err" style="color:var(--red);font-size:13px;margin-bottom:10px;display:none"></div>
+    <div class="btn-row">
+      <button class="btn btn-cancel" onclick="closeTotpModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveTotp()">Add</button>
     </div>
   </div>
 </div>
@@ -723,6 +771,106 @@ async function saveSetting(key, value) {
   await fetch('/api/settings', {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({[key]:value})})
   showToast('Saved')
 }
+
+// ── Add TOTP ─────────────────────────────────────────────────────────────────
+let qrStream = null, qrRaf = null
+
+function openTotpModal() {
+  document.getElementById('totp-name').value = ''
+  document.getElementById('totp-issuer').value = ''
+  document.getElementById('totp-secret').value = ''
+  document.getElementById('totp-err').style.display = 'none'
+  document.getElementById('totp-modal').classList.add('open')
+}
+
+function closeTotpModal() {
+  stopQR()
+  document.getElementById('totp-modal').classList.remove('open')
+}
+
+async function saveTotp() {
+  const name = document.getElementById('totp-name').value.trim()
+  const issuer = document.getElementById('totp-issuer').value.trim()
+  const secret = document.getElementById('totp-secret').value.trim().toUpperCase().replace(/\\s/g,'')
+  const errEl = document.getElementById('totp-err')
+  if (!name || !secret) { errEl.textContent = 'Name and secret are required'; errEl.style.display = ''; return }
+  if (!/^[A-Z2-7]+=*$/.test(secret)) { errEl.textContent = 'Invalid Base32 secret'; errEl.style.display = ''; return }
+  try {
+    const res = await fetch('/api/totp', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,issuer,secret})})
+    if (!res.ok) { const e = await res.json(); errEl.textContent = e.error || 'Failed'; errEl.style.display = ''; return }
+    closeTotpModal()
+    showToast('Account added!')
+    await startTOTP()
+  } catch { errEl.textContent = 'Could not connect'; errEl.style.display = '' }
+}
+
+function parseOtpAuth(uri) {
+  try {
+    if (!uri.startsWith('otpauth://totp/')) return null
+    const url = new URL(uri)
+    const label = decodeURIComponent(url.pathname.replace('/totp/',''))
+    const secret = url.searchParams.get('secret') || ''
+    const issuer = url.searchParams.get('issuer') || ''
+    const [li, la] = label.includes(':') ? label.split(':') : ['', label]
+    return { name: (la||label).trim(), issuer: issuer||li.trim(), secret: secret.toUpperCase().replace(/\\s/g,'') }
+  } catch { return null }
+}
+
+async function startQR() {
+  try {
+    document.getElementById('qr-container').style.display = ''
+    document.getElementById('qr-btn').style.display = 'none'
+    const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}})
+    qrStream = stream
+    const video = document.getElementById('qr-video')
+    video.srcObject = stream
+    await video.play()
+
+    // Load jsQR dynamically
+    if (!window.jsQR) {
+      await new Promise((res,rej) => {
+        const s = document.createElement('script')
+        s.src = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js'
+        s.onload = res; s.onerror = rej
+        document.head.appendChild(s)
+      })
+    }
+    scanQR()
+  } catch(e) { showToast('Camera access denied'); stopQR() }
+}
+
+function scanQR() {
+  const video = document.getElementById('qr-video')
+  const canvas = document.getElementById('qr-canvas')
+  if (!video || video.readyState !== video.HAVE_ENOUGH_DATA) { qrRaf = requestAnimationFrame(scanQR); return }
+  canvas.width = video.videoWidth; canvas.height = video.videoHeight
+  const ctx = canvas.getContext('2d')
+  ctx.drawImage(video, 0, 0)
+  const img = ctx.getImageData(0, 0, canvas.width, canvas.height)
+  const result = window.jsQR && window.jsQR(img.data, img.width, img.height)
+  if (result?.data?.startsWith('otpauth://')) {
+    stopQR()
+    const parsed = parseOtpAuth(result.data)
+    if (parsed) {
+      document.getElementById('totp-name').value = parsed.name
+      document.getElementById('totp-issuer').value = parsed.issuer
+      document.getElementById('totp-secret').value = parsed.secret
+      showToast('QR scanned!')
+    }
+    return
+  }
+  qrRaf = requestAnimationFrame(scanQR)
+}
+
+function stopQR() {
+  cancelAnimationFrame(qrRaf)
+  qrStream?.getTracks().forEach(t => t.stop())
+  qrStream = null
+  document.getElementById('qr-container').style.display = 'none'
+  document.getElementById('qr-btn').style.display = ''
+}
+
+document.getElementById('totp-modal').addEventListener('click', function(e) { if(e.target===this) closeTotpModal() })
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 loadTodos()
