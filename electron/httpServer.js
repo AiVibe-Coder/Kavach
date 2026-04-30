@@ -443,15 +443,8 @@ select option{background:var(--card)}
 <div class="modal" id="totp-modal">
   <div class="modal-body">
     <h2>Add 2FA Account</h2>
-    <div id="qr-container" style="display:none;margin-bottom:14px">
-      <div class="qr-wrap">
-        <video id="qr-video" muted playsinline></video>
-        <canvas id="qr-canvas" style="display:none"></canvas>
-        <div class="qr-overlay"><div class="qr-box"></div></div>
-        <div class="qr-hint">Point camera at QR code</div>
-      </div>
-      <button class="btn btn-cancel" style="width:100%;margin-top:10px" onclick="stopQR()">Cancel scan</button>
-    </div>
+    <canvas id="qr-canvas" style="display:none"></canvas>
+    <input type="file" id="qr-file-input" accept="image/*" capture="environment" style="display:none" onchange="handleQRFile(this)"/>
     <button class="btn btn-primary" id="qr-btn" style="width:100%;margin-bottom:14px" onclick="startQR()">📷 Scan QR Code</button>
     <input type="text" id="totp-name" placeholder="Account name (e.g. john@gmail.com)"/>
     <input type="text" id="totp-issuer" placeholder="Service (e.g. Google, GitHub)"/>
@@ -817,58 +810,49 @@ function parseOtpAuth(uri) {
 }
 
 async function startQR() {
-  try {
-    document.getElementById('qr-container').style.display = ''
-    document.getElementById('qr-btn').style.display = 'none'
-    const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}})
-    qrStream = stream
-    const video = document.getElementById('qr-video')
-    video.srcObject = stream
-    await video.play()
-
-    // Load jsQR dynamically
-    if (!window.jsQR) {
-      await new Promise((res,rej) => {
-        const s = document.createElement('script')
-        s.src = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js'
-        s.onload = res; s.onerror = rej
-        document.head.appendChild(s)
-      })
-    }
-    scanQR()
-  } catch(e) { showToast('Camera access denied'); stopQR() }
+  // Use file input with camera capture — works on iOS Safari over HTTP, no permission prompt
+  document.getElementById('qr-file-input').click()
 }
 
-function scanQR() {
-  const video = document.getElementById('qr-video')
-  const canvas = document.getElementById('qr-canvas')
-  if (!video || video.readyState !== video.HAVE_ENOUGH_DATA) { qrRaf = requestAnimationFrame(scanQR); return }
-  canvas.width = video.videoWidth; canvas.height = video.videoHeight
-  const ctx = canvas.getContext('2d')
-  ctx.drawImage(video, 0, 0)
-  const img = ctx.getImageData(0, 0, canvas.width, canvas.height)
-  const result = window.jsQR && window.jsQR(img.data, img.width, img.height)
-  if (result?.data?.startsWith('otpauth://')) {
-    stopQR()
-    const parsed = parseOtpAuth(result.data)
-    if (parsed) {
-      document.getElementById('totp-name').value = parsed.name
-      document.getElementById('totp-issuer').value = parsed.issuer
-      document.getElementById('totp-secret').value = parsed.secret
-      showToast('QR scanned!')
-    }
-    return
+async function handleQRFile(input) {
+  const file = input.files[0]
+  if (!file) return
+  input.value = ''
+
+  // Load jsQR if not already loaded
+  if (!window.jsQR) {
+    await new Promise((res, rej) => {
+      const s = document.createElement('script')
+      s.src = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js'
+      s.onload = res; s.onerror = rej
+      document.head.appendChild(s)
+    })
   }
-  qrRaf = requestAnimationFrame(scanQR)
+
+  const img = new Image()
+  img.onload = () => {
+    const canvas = document.getElementById('qr-canvas')
+    canvas.width = img.width; canvas.height = img.height
+    const ctx = canvas.getContext('2d')
+    ctx.drawImage(img, 0, 0)
+    const data = ctx.getImageData(0, 0, canvas.width, canvas.height)
+    const result = window.jsQR(data.data, data.width, data.height)
+    if (result?.data?.startsWith('otpauth://')) {
+      const parsed = parseOtpAuth(result.data)
+      if (parsed) {
+        document.getElementById('totp-name').value = parsed.name
+        document.getElementById('totp-issuer').value = parsed.issuer
+        document.getElementById('totp-secret').value = parsed.secret
+        showToast('QR scanned!')
+        return
+      }
+    }
+    showToast('No valid QR code found')
+  }
+  img.src = URL.createObjectURL(file)
 }
 
-function stopQR() {
-  cancelAnimationFrame(qrRaf)
-  qrStream?.getTracks().forEach(t => t.stop())
-  qrStream = null
-  document.getElementById('qr-container').style.display = 'none'
-  document.getElementById('qr-btn').style.display = ''
-}
+function stopQR() {}
 
 document.getElementById('totp-modal').addEventListener('click', function(e) { if(e.target===this) closeTotpModal() })
 
