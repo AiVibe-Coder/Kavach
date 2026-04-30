@@ -2,6 +2,7 @@ const express = require('express')
 const cors = require('cors')
 const path = require('path')
 const os = require('os')
+const fs = require('fs')
 
 let serverInstance = null
 let _apiToken = null
@@ -35,9 +36,18 @@ function startHttpServer(db, cryptoModule, getSessionKey, port = 3847) {
   app.use(cors())
   app.use(express.json())
 
-  // Serve mobile web UI
-  app.get('/', (req, res) => {
-    res.send(getMobileHTML())
+  app.get('/', (req, res) => res.send(getMobileHTML()))
+
+  // Serve jsQR locally — avoids CDN dependency on local network
+  app.get('/jsqr.js', (req, res) => {
+    const jsqrPath = path.join(__dirname, '../node_modules/jsqr/dist/jsQR.js')
+    if (fs.existsSync(jsqrPath)) {
+      res.setHeader('Content-Type', 'application/javascript')
+      res.setHeader('Cache-Control', 'public, max-age=86400')
+      res.sendFile(jsqrPath)
+    } else {
+      res.status(404).send('not found')
+    }
   })
 
   // ── API Routes ──────────────────────────────────────────────────────────────
@@ -819,11 +829,11 @@ async function handleQRFile(input) {
   if (!file) return
   input.value = ''
 
-  // Load jsQR if not already loaded
+  // Load jsQR from local server
   if (!window.jsQR) {
     await new Promise((res, rej) => {
       const s = document.createElement('script')
-      s.src = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js'
+      s.src = '/jsqr.js'
       s.onload = res; s.onerror = rej
       document.head.appendChild(s)
     })
@@ -832,9 +842,13 @@ async function handleQRFile(input) {
   const img = new Image()
   img.onload = () => {
     const canvas = document.getElementById('qr-canvas')
-    canvas.width = img.width; canvas.height = img.height
+    // Scale down large images — iPhone photos are 12MP+, jsQR works best under 1000px
+    const MAX = 800
+    const scale = Math.min(1, MAX / Math.max(img.width, img.height))
+    canvas.width = img.width * scale
+    canvas.height = img.height * scale
     const ctx = canvas.getContext('2d')
-    ctx.drawImage(img, 0, 0)
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
     const data = ctx.getImageData(0, 0, canvas.width, canvas.height)
     const result = window.jsQR(data.data, data.width, data.height)
     if (result?.data?.startsWith('otpauth://')) {
@@ -847,7 +861,7 @@ async function handleQRFile(input) {
         return
       }
     }
-    showToast('No valid QR code found')
+    showToast('No valid QR code — try again')
   }
   img.src = URL.createObjectURL(file)
 }

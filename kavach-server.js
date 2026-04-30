@@ -14,6 +14,7 @@ const path    = require('path')
 const fs      = require('fs')
 
 const db = require('./electron/database')
+const fs = require('fs')
 
 // Try to load the mobile HTML generator from httpServer — reuse it directly
 const { getMobileHTML, startHttpServer } = (() => {
@@ -39,6 +40,16 @@ app.use(express.json())
 if (typeof getMobileHTML === 'function') {
   app.get('/', (req, res) => res.send(getMobileHTML()))
 }
+
+// ── Static assets ────────────────────────────────────────────────────────────
+app.get('/jsqr.js', (req, res) => {
+  const p = path.join(__dirname, 'node_modules/jsqr/dist/jsQR.js')
+  if (fs.existsSync(p)) {
+    res.setHeader('Content-Type', 'application/javascript')
+    res.setHeader('Cache-Control', 'public, max-age=86400')
+    res.sendFile(p)
+  } else res.status(404).send('not found')
+})
 
 // ── Todos ────────────────────────────────────────────────────────────────────
 app.get('/api/todos',          (req, res) => res.json(db.getTodos()))
