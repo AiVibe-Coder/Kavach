@@ -10,8 +10,8 @@
     "dist": "node scripts/gen-icons.js && vite build && electron-builder --mac"
   },
   "dependencies": {
-    "cors": "^2.8.5",
-    "express": "^4.18.2",
+    "cors": "^2.8.6",
+    "express": "^4.22.1",
     "node-cron": "^3.0.3"
   },
   "devDependencies": {
@@ -42,7 +42,9 @@
       "target": [
         {
           "target": "dmg",
-          "arch": ["arm64"]
+          "arch": [
+            "arm64"
+          ]
         }
       ],
       "darkModeSupport": true,

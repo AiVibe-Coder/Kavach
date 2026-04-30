@@ -72,6 +72,25 @@ function startHttpServer(db, cryptoModule, getSessionKey, port = 3847) {
     res.json(entries)
   })
 
+  // ── Settings API ────────────────────────────────────────────────────────────
+  app.get('/api/settings', (req, res) => {
+    const s = db.getSettings()
+    res.json({
+      touchIdEnabled: s.touchIdEnabled || false,
+      notificationsEnabled: s.notificationsEnabled,
+      notificationTime: s.notificationTime || '09:00',
+      notifyEmail: s.notifyEmail || '',
+      nasPath: s.nasPath || '',
+      httpPort: s.httpPort || 3847,
+      apiToken: _apiToken || null
+    })
+  })
+
+  app.put('/api/settings', (req, res) => {
+    db.saveSettings(req.body)
+    res.json({ ok: true })
+  })
+
   // ── Journal API ─────────────────────────────────────────────────────────────
   app.get('/api/journal', (req, res) => {
     res.json(db.getJournalEntries())
@@ -255,6 +274,17 @@ select option{background:var(--card)}
 .modal-body{background:var(--surface);border-radius:24px 24px 0 0;padding:24px;width:100%;padding-bottom:calc(env(safe-area-inset-bottom,0px) + 24px)}
 .modal-body h2{font-size:20px;font-weight:700;margin-bottom:20px}
 
+/* ── Settings toggles ── */
+.setting-row{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.setting-label{font-size:15px;font-weight:500}
+.setting-sub{font-size:12px;color:var(--muted);margin-top:2px}
+.toggle{position:relative;display:inline-block;width:44px;height:26px;flex-shrink:0}
+.toggle input{display:none}
+.toggle .knob{position:absolute;inset:0;background:var(--card);border-radius:26px;border:1px solid rgba(255,255,255,.12);cursor:pointer;transition:.2s}
+.toggle .knob::after{content:'';position:absolute;width:20px;height:20px;background:#fff;border-radius:50%;top:2px;left:2px;transition:.2s;box-shadow:0 1px 4px rgba(0,0,0,.3)}
+.toggle input:checked + .knob{background:var(--accent);border-color:var(--accent)}
+.toggle input:checked + .knob::after{left:20px}
+
 /* ── Toast ── */
 .toast{position:fixed;bottom:100px;left:50%;transform:translateX(-50%);background:#333;color:#fff;padding:10px 20px;border-radius:20px;font-size:14px;opacity:0;transition:opacity .3s;z-index:600;white-space:nowrap}
 .toast.show{opacity:1}
@@ -286,6 +316,7 @@ select option{background:var(--card)}
   <div class="nav-item" id="nav-vault" onclick="showTab('vault')"><span class="icon">⊞</span> Vault</div>
   <div class="nav-item" id="nav-journal" onclick="showTab('journal')"><span class="icon">📔</span> Journal</div>
   <div class="nav-item" id="nav-authenticator" onclick="showTab('authenticator')"><span class="icon">🔑</span> Authenticator</div>
+  <div class="nav-item" id="nav-settings" onclick="showTab('settings')"><span class="icon">⚙️</span> Settings</div>
   <div class="drawer-footer">
     <div class="nav-item" style="color:var(--red)" onclick="showToast('Lock KaVach on your Mac')"><span class="icon">⊗</span> Lock App</div>
   </div>
@@ -332,6 +363,11 @@ select option{background:var(--card)}
     <!-- AUTHENTICATOR -->
     <div id="tab-authenticator" style="display:none">
       <div id="totp-list"></div>
+    </div>
+
+    <!-- SETTINGS -->
+    <div id="tab-settings" style="display:none">
+      <div id="settings-body"></div>
     </div>
 
   </div>
@@ -400,7 +436,7 @@ function closeDrawer() {
 }
 
 // ── Tab switching ─────────────────────────────────────────────────────────────
-const TABS = ['dashboard','todos','vault','journal','authenticator']
+const TABS = ['dashboard','todos','vault','journal','authenticator','settings']
 function showTab(tab) {
   TABS.forEach(t => document.getElementById('tab-' + t).style.display = t === tab ? '' : 'none')
   TABS.forEach(t => document.getElementById('nav-' + t).classList.toggle('active', t === tab))
@@ -408,6 +444,7 @@ function showTab(tab) {
   closeDrawer()
   if (tab === 'authenticator') startTOTP()
   else stopTOTP()
+  if (tab === 'settings') loadSettings()
 }
 
 // ── Todos ────────────────────────────────────────────────────────────────────
@@ -617,6 +654,76 @@ function showToast(msg) {
   setTimeout(() => t.classList.remove('show'), 2500)
 }
 
+// ── Settings ──────────────────────────────────────────────────────────────────
+async function loadSettings() {
+  try {
+    const res = await fetch('/api/settings')
+    const s = await res.json()
+    document.getElementById('settings-body').innerHTML = \`
+      <div class="card">
+        <div style="font-weight:700;font-size:15px;margin-bottom:14px">🔐 Security</div>
+        <div class="setting-row">
+          <div><div class="setting-label">Touch ID</div><div class="setting-sub">Fingerprint unlock</div></div>
+          <label class="toggle"><input type="checkbox" \${s.touchIdEnabled?'checked':''} onchange="saveSetting('touchIdEnabled',this.checked)"><span class="knob"></span></label>
+        </div>
+        <div style="margin-top:12px;padding:10px 12px;background:var(--bg);border-radius:10px;font-size:12px;color:var(--muted);line-height:1.7">
+          ✓ AES-256-GCM encrypted &nbsp;·&nbsp; ✓ Key in Keychain &nbsp;·&nbsp; ✓ Never uploaded
+        </div>
+      </div>
+
+      <div class="card">
+        <div style="font-weight:700;font-size:15px;margin-bottom:14px">📧 Security Alert Email</div>
+        <div class="setting-label" style="margin-bottom:6px">Alert email when vault opens</div>
+        <input type="email" placeholder="you@icloud.com" value="\${s.notifyEmail}" onblur="saveSetting('notifyEmail',this.value)" style="margin-bottom:4px"/>
+        <div style="font-size:11px;color:var(--muted)">Sent via Mail.app — requires Mail.app configured on your Mac.</div>
+      </div>
+
+      <div class="card">
+        <div style="font-weight:700;font-size:15px;margin-bottom:14px">🔔 Notifications</div>
+        <div class="setting-row" style="margin-bottom:14px">
+          <div><div class="setting-label">Enable reminders</div><div class="setting-sub">Due date & daily digest</div></div>
+          <label class="toggle"><input type="checkbox" \${s.notificationsEnabled?'checked':''} onchange="saveSetting('notificationsEnabled',this.checked)"><span class="knob"></span></label>
+        </div>
+        <div class="setting-label" style="margin-bottom:6px">Daily digest time</div>
+        <input type="time" value="\${s.notificationTime}" onchange="saveSetting('notificationTime',this.value)" style="margin-bottom:0;width:140px"/>
+      </div>
+
+      <div class="card">
+        <div style="font-weight:700;font-size:15px;margin-bottom:14px">🧩 Browser Extension</div>
+        \${s.apiToken ? \`
+          <div class="setting-label" style="margin-bottom:6px">API Token</div>
+          <div style="display:flex;gap:8px;align-items:center;background:var(--bg);border-radius:10px;padding:10px 12px;margin-bottom:10px">
+            <div style="font-family:monospace;font-size:11px;color:var(--accent);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">\${s.apiToken}</div>
+            <button class="vault-copy" onclick="copyPwd('\${s.apiToken}')">Copy</button>
+          </div>
+          <div style="font-size:12px;color:var(--muted);line-height:1.8">Paste into the KaVach extension → Settings in Chrome / Firefox / Edge / Brave.</div>
+        \` : '<div style="font-size:13px;color:var(--muted)">Unlock KaVach on Mac to see your token.</div>'}
+      </div>
+
+      <div class="card">
+        <div style="font-weight:700;font-size:15px;margin-bottom:14px">💾 Storage</div>
+        <div style="background:var(--bg);border-radius:10px;padding:12px;margin-bottom:12px">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">Data location</div>
+          <div style="font-family:monospace;font-size:12px;color:var(--text)">~/.kavach/</div>
+        </div>
+        <div class="setting-label" style="margin-bottom:6px">NAS / Custom path (optional)</div>
+        <input placeholder="/Volumes/NAS/Kavach" value="\${s.nasPath}" onblur="saveSetting('nasPath',this.value||null)" style="margin-bottom:0"/>
+      </div>
+
+      <div class="card" style="text-align:center;padding:20px">
+        <div style="font-size:24px;margin-bottom:6px">🔐</div>
+        <div style="font-weight:700">KaVach v1.1</div>
+        <div style="font-size:12px;color:var(--muted);margin-top:4px">कवच · Local-first · Secure · Private</div>
+      </div>
+    \`
+  } catch(e) { console.error(e) }
+}
+
+async function saveSetting(key, value) {
+  await fetch('/api/settings', {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({[key]:value})})
+  showToast('Saved')
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 loadTodos()
 loadJournal()
@@ -625,4 +732,4 @@ loadJournal()
 </html>`
 }
 
-module.exports = { startHttpServer, stopHttpServer, getLocalIP, setVaultAccess, clearVaultAccess }
+module.exports = { startHttpServer, stopHttpServer, getLocalIP, setVaultAccess, clearVaultAccess, getMobileHTML }
