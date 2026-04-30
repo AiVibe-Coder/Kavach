@@ -1,4 +1,5 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
+import jsQR from 'jsqr'
 
 const api = window.vault
 
@@ -178,13 +179,99 @@ function parseOtpAuth(uri) {
   } catch { return null }
 }
 
+function QRScanner({ onDetected, onClose }) {
+  const videoRef = useRef(null)
+  const canvasRef = useRef(null)
+  const rafRef = useRef(null)
+  const streamRef = useRef(null)
+
+  useEffect(() => {
+    async function start() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 480 } }
+        })
+        streamRef.current = stream
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream
+          videoRef.current.play()
+          scan()
+        }
+      } catch (e) {
+        onClose('Camera access denied — allow camera in System Settings → Privacy → Camera')
+      }
+    }
+    start()
+    return () => {
+      cancelAnimationFrame(rafRef.current)
+      streamRef.current?.getTracks().forEach(t => t.stop())
+    }
+  }, [])
+
+  function scan() {
+    const video = videoRef.current
+    const canvas = canvasRef.current
+    if (!video || !canvas || video.readyState !== video.HAVE_ENOUGH_DATA) {
+      rafRef.current = requestAnimationFrame(scan); return
+    }
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+    const ctx = canvas.getContext('2d')
+    ctx.drawImage(video, 0, 0)
+    const img = ctx.getImageData(0, 0, canvas.width, canvas.height)
+    const result = jsQR(img.data, img.width, img.height)
+    if (result?.data?.startsWith('otpauth://')) {
+      streamRef.current?.getTracks().forEach(t => t.stop())
+      onDetected(result.data)
+      return
+    }
+    rafRef.current = requestAnimationFrame(scan)
+  }
+
+  return (
+    <div style={{ position: 'relative', borderRadius: 12, overflow: 'hidden', background: '#000', aspectRatio: '4/3' }}>
+      <video ref={videoRef} style={{ width: '100%', display: 'block' }} muted playsInline />
+      <canvas ref={canvasRef} style={{ display: 'none' }} />
+      {/* Targeting overlay */}
+      <div style={{
+        position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none'
+      }}>
+        <div style={{
+          width: 180, height: 180, border: '2px solid var(--accent2)', borderRadius: 16,
+          boxShadow: '0 0 0 9999px rgba(0,0,0,0.5)'
+        }} />
+      </div>
+      <div style={{
+        position: 'absolute', bottom: 12, left: 0, right: 0, textAlign: 'center',
+        fontSize: 13, color: 'rgba(255,255,255,0.8)'
+      }}>
+        Point camera at QR code
+      </div>
+    </div>
+  )
+}
+
 function AddAccountModal({ onClose, onSave, showToast }) {
   const [form, setForm] = useState({ name: '', issuer: '', secret: '' })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [uriDetected, setUriDetected] = useState(false)
+  const [scanning, setScanning] = useState(false)
 
   function set(k, v) { setForm(f => ({ ...f, [k]: v })); setError('') }
+
+  function handleQRDetected(uri) {
+    const parsed = parseOtpAuth(uri)
+    if (parsed) {
+      setForm({ name: parsed.name, issuer: parsed.issuer, secret: parsed.secret })
+      setUriDetected(true)
+      setScanning(false)
+      showToast('QR code scanned!')
+    } else {
+      setScanning(false)
+      setError('QR code found but not a valid 2FA code')
+    }
+  }
 
   function handleSecretChange(v) {
     setError('')
@@ -221,6 +308,27 @@ function AddAccountModal({ onClose, onSave, showToast }) {
           <button className="modal-close" onClick={onClose}>✕</button>
         </div>
         <div className="modal-body">
+
+          {/* QR Scanner */}
+          {scanning ? (
+            <div style={{ marginBottom: 16 }}>
+              <QRScanner
+                onDetected={handleQRDetected}
+                onClose={(err) => { setScanning(false); if (err) setError(err) }}
+              />
+              <button className="btn btn-secondary" style={{ width: '100%', marginTop: 10 }} onClick={() => setScanning(false)}>
+                Cancel scan
+              </button>
+            </div>
+          ) : (
+            <button
+              className="btn btn-secondary"
+              style={{ width: '100%', marginBottom: 16, fontSize: 15 }}
+              onClick={() => { setError(''); setScanning(true) }}
+            >
+              📷 Scan QR Code
+            </button>
+          )}
 
           {/* otpauth URI paste zone */}
           <div style={{ background: 'var(--bg)', borderRadius: 10, padding: 12, marginBottom: 16, border: '1px dashed var(--border)' }}>

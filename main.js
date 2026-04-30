@@ -67,6 +67,11 @@ function createWindow() {
   isDev ? mainWindow.loadURL('http://localhost:5173') : mainWindow.loadFile(path.join(__dirname, 'dist', 'index.html'))
 
   mainWindow.once('ready-to-show', () => mainWindow.show())
+
+  // Allow camera access for QR code scanner
+  mainWindow.webContents.session.setPermissionRequestHandler((webContents, permission, callback) => {
+    callback(permission === 'media')
+  })
   // Red X hides the window (app keeps running in menu bar + Dock)
   // Quit from Dock right-click or menu bar → Quit to fully exit
   mainWindow.on('close', (e) => {
