@@ -66,11 +66,30 @@ app.get('/api/settings', (req, res) => {
 })
 app.put('/api/settings', (req, res) => { db.saveSettings(req.body); res.json({ ok: true }) })
 
-// ── Vault & TOTP — require Electron running ──────────────────────────────────
-app.post('/api/vault/unlock', (req, res) =>
-  res.status(503).json({ error: 'Open KaVach on Mac to access vault' }))
-app.get('/api/totp', (req, res) =>
-  res.status(503).json({ error: 'Open KaVach on Mac to access authenticator' }))
+// ── Vault & TOTP — proxy to Electron server (3847) when running ──────────────
+const http = require('http')
+
+function proxyToElectron(req, res, path, method) {
+  const options = {
+    hostname: '127.0.0.1', port: 3847,
+    path, method: method || req.method,
+    headers: { 'Content-Type': 'application/json' }
+  }
+  const proxy = http.request(options, (r) => {
+    res.status(r.statusCode)
+    r.pipe(res)
+  })
+  proxy.on('error', () =>
+    res.status(503).json({ error: 'Open and unlock KaVach on Mac first' })
+  )
+  if (req.body && Object.keys(req.body).length) {
+    proxy.write(JSON.stringify(req.body))
+  }
+  proxy.end()
+}
+
+app.post('/api/vault/unlock', (req, res) => proxyToElectron(req, res, '/api/vault/unlock', 'POST'))
+app.get('/api/totp',          (req, res) => proxyToElectron(req, res, '/api/totp', 'GET'))
 
 // ── Start ────────────────────────────────────────────────────────────────────
 app.listen(PORT, '0.0.0.0', () => {
